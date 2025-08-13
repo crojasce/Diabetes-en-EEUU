@@ -193,3 +193,4 @@ with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=False):
 
 
 
+
