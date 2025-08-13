@@ -13,11 +13,7 @@ st.title("Taller 1 Dataset DIABETES")
 st.title("Tarea 1")
 st.caption("Realizar PCA (sobre el conjunto de variables numéricas) y MCA (sobre el conjunto de variables categóricas), seleccionar las componentes principales y las dimensiones que acumulen una varianza por encima de algún porcentaje (ustedes lo deciden) y crear un nuevo dataset con las pcs y las dimensiones concatenadas.")
 st.caption("Cargue su CSV, elija el umbral de varianza y obtenga el dataset con las componentes concatenadas.")
-st.caption("Instalación de librerías necesarias Se instalan y cargan las librerías que utilizaremos:
-            prince para realizar el Análisis de Correspondencias Múltiples (MCA).
-            scikit-learn para el Análisis de Componentes Principales (PCA) y el escalado de datos.
-            pandas y numpy para la manipulación de datos.
-            También se importa zipfile para descomprimir el archivo ZIP con la base de datos.")
+st.caption("Instalación de librerías necesarias Se instalan y cargan las librerías que utilizaremos:             prince para realizar el Análisis de Correspondencias Múltiples (MCA).             scikit-learn para el Análisis de Componentes Principales (PCA) y el escalado de datos.             pandas y numpy para la manipulación de datos.             También se importa zipfile para descomprimir el archivo ZIP con la base de datos.")
 # -----------------------------
 # Sidebar: parámetros
 # -----------------------------
