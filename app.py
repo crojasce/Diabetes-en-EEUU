@@ -29,24 +29,18 @@ def is_identifier(colname: str) -> bool:
     name = str(colname).lower()
     return any(tok in name for tok in ["id", "identifier", "uuid", "nbr", "key", "encounter"])
 
-def drop_identifier_like_columns(df: pd.DataFrame, high_uniqueness_ratio: float = 0.95) -> Tuple[pd.DataFrame, List[str]]:
-    cols_to_drop = set()
-    nrows = len(df)
+def drop_identifier_like_columns(df: pd.DataFrame):
+    ids_reales = {"encounter_id", "patient_nbr"}
+    dropped = [c for c in df.columns if c in ids_reales]
+    return df.drop(columns=dropped, errors="ignore"), dropped
+# Cargar mapping una vez
+ids_map = pd.read_csv("IDS_mapping.csv")   # ej.: columnas 'code' y 'group'
+dic = ids_map.set_index("code")["group"].to_dict()
 
-    for c in df.columns:
-        if is_identifier(c):
-            cols_to_drop.add(c)
+for col in ["diag_1", "diag_2", "diag_3"]:
+    if col in df_clean.columns:
+        df_clean[col] = df_clean[col].map(dic).fillna("OTHER")
 
-    if nrows > 0:
-        for c in df.columns:
-            try:
-                if df[c].nunique(dropna=True) / nrows >= high_uniqueness_ratio:
-                    cols_to_drop.add(c)
-            except Exception:
-                pass
-
-    cleaned = df.drop(columns=list(cols_to_drop), errors="ignore")
-    return cleaned, sorted(list(cols_to_drop))
 
 def split_numeric_categorical(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     num_df = df.select_dtypes(include=["number"]).copy()
@@ -69,43 +63,43 @@ def fit_pca(num_df: pd.DataFrame, threshold: float = 0.80):
                        columns=[f"PC{i+1}" for i in range(ncomp)])
     return pcs, pca, cum_var
 
-def reduce_categorical_cardinality(cat: pd.DataFrame, max_modalities_per_col: int = 50, rare_min_count: int = 30) -> pd.DataFrame:
-    """
-    - Convierte a str y rellena NaN -> 'missing'
-    - Si una columna tiene demasiadas categorías, se quedan las top-(max-1) y el resto -> 'OTHER'
-    - Además, toda categoría con conteo < rare_min_count -> 'OTHER'
-    """
+def reduce_categorical_cardinality(cat: pd.DataFrame, max_modalities_per_col=50, rare_min_count=30):
     cat = cat.fillna("missing").astype(str).copy()
-
     for c in cat.columns:
         vc = cat[c].value_counts(dropna=False)
-
-        # 1) Recortar a top categorías si hay demasiadas
         if len(vc) > max_modalities_per_col:
-            keep = set(vc.index[:max_modalities_per_col - 1])  # deja espacio para OTHER
+            keep = set(vc.index[:max_modalities_per_col - 1])
             cat[c] = np.where(cat[c].isin(keep), cat[c], "OTHER")
-            vc = cat[c].value_counts(dropna=False)  # recomputa tras recorte
-
-        # 2) Enviar categorías muy raras a OTHER
+            vc = cat[c].value_counts(dropna=False)
         rare_vals = set(vc[vc < rare_min_count].index)
         if rare_vals:
             cat[c] = cat[c].where(~cat[c].isin(rare_vals), "OTHER")
-
     return cat
 
-def safe_explained_inertia(mca) -> np.ndarray:
-    """Compatibilidad multi-versión de prince para obtener inercia explicada."""
+
+from prince import MCA
+import numpy as np
+
+def explained_inertia(mca):
     if hasattr(mca, "explained_inertia_"):
         return np.array(mca.explained_inertia_, dtype=float)
     if hasattr(mca, "eigenvalues_"):
         ev = np.array(mca.eigenvalues_, dtype=float).ravel()
-        total = ev.sum() if ev.sum() != 0 else 1.0
-        return ev / total
-    if hasattr(mca, "singular_values_"):
-        sv = np.array(mca.singular_values_, dtype=float).ravel()
-        ev = sv ** 2
-        total = ev.sum() if ev.sum() != 0 else 1.0
-        return ev / total
+        tot = ev.sum() or 1.0
+        return ev / tot
+    sv = np.array(mca.singular_values_, dtype=float).ravel()
+    ev = sv**2
+    tot = ev.sum() or 1.0
+    return ev / tot
+
+# cat_df = reduce_categorical_cardinality(cat_df, 50, 30)  # después del mapping
+mca = MCA(n_components=50).fit(cat_df)
+inertia = explained_inertia(mca)
+cum = inertia.cumsum()
+ndims = int(np.searchsorted(cum, 0.80) + 1)
+dims = mca.transform(cat_df).iloc[:, :ndims]
+dims.columns = [f"Dim{i+1}" for i in range(ndims)]
+
     # si no hay nada de lo anterior:
     raise AttributeError("No fue posible obtener la inercia explicada de 'prince.MCA'.")
 
