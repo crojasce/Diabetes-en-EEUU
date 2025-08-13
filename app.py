@@ -1,16 +1,18 @@
 # app.py
 # ------------------------------------------------------------
 # PCA (numéricas) + MCA (categóricas) con umbral del 80%
-# - Reduce categorías raras/altas cardinalidades a "OTHER" (más rápido y estable)
-# - Muestra paso a paso y entrega dataset final concatenado
+# - Mapping de diagnósticos OPCIONAL (subida por sidebar o archivo local)
+# - Reduce categorías raras/alta cardinalidad a "OTHER" para acelerar/estabilizar
+# - Paso a paso + dataset final concatenado (PCs + Dimensiones)
 # ------------------------------------------------------------
 
 import io
 import os
+from typing import Tuple, List
+
 import numpy as np
 import pandas as pd
 import streamlit as st
-from typing import Tuple, List
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
@@ -25,22 +27,41 @@ except Exception as e:
 
 # ================= Utilidades =================
 
-def is_identifier(colname: str) -> bool:
-    name = str(colname).lower()
-    return any(tok in name for tok in ["id", "identifier", "uuid", "nbr", "key", "encounter"])
-
-def drop_identifier_like_columns(df: pd.DataFrame):
+def drop_identifier_like_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Elimina SOLO identificadores reales.
+    """
     ids_reales = {"encounter_id", "patient_nbr"}
     dropped = [c for c in df.columns if c in ids_reales]
     return df.drop(columns=dropped, errors="ignore"), dropped
-# Cargar mapping una vez
-ids_map = pd.read_csv("IDS_mapping.csv")   # ej.: columnas 'code' y 'group'
-dic = ids_map.set_index("code")["group"].to_dict()
 
-for col in ["diag_1", "diag_2", "diag_3"]:
-    if col in df_clean.columns:
-        df_clean[col] = df_clean[col].map(dic).fillna("OTHER")
+def apply_diag_mapping(df_in: pd.DataFrame, ids_map: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Aplica un mapeo de diagnósticos si está disponible.
+    Busca columnas típicas en el mapping: ('code', 'group') o variantes.
+    Si no se encuentran, se omite el mapeo.
+    """
+    if ids_map is None:
+        return df_in
 
+    code_candidates = ["code", "diag_code", "icd9", "ICD9", "ICD9_CODE"]
+    group_candidates = ["group", "category", "CCS", "ccs_group"]
+
+    col_code = next((c for c in code_candidates if c in ids_map.columns), None)
+    col_group = next((c for c in group_candidates if c in ids_map.columns), None)
+
+    if col_code is None or col_group is None:
+        st.warning("IDS_mapping.csv no tiene columnas esperadas (ej. 'code' y 'group'). Se omite el mapeo.")
+        return df_in
+
+    mapping = ids_map.set_index(col_code)[col_group].to_dict()
+    df = df_in.copy()
+    for col in ["diag_1", "diag_2", "diag_3"]:
+        if col in df.columns:
+            # Mapea a grupo; si no hay mapeo, mantiene el valor original
+            df[col] = df[col].astype(str).map(mapping).fillna(df[col].astype(str))
+    st.info("Mapping de diagnósticos aplicado.")
+    return df
 
 def split_numeric_categorical(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     num_df = df.select_dtypes(include=["number"]).copy()
@@ -64,41 +85,28 @@ def fit_pca(num_df: pd.DataFrame, threshold: float = 0.80):
     return pcs, pca, cum_var
 
 def reduce_categorical_cardinality(cat: pd.DataFrame, max_modalities_per_col=50, rare_min_count=30):
+    """
+    - Convierte a str y rellena NaN -> 'missing'
+    - Si una columna tiene demasiadas categorías, se quedan las top-(max-1) y el resto -> 'OTHER'
+    - Además, toda categoría con conteo < rare_min_count -> 'OTHER'
+    """
     cat = cat.fillna("missing").astype(str).copy()
+
     for c in cat.columns:
         vc = cat[c].value_counts(dropna=False)
+
+        # Recortar a top categorías si hay demasiadas
         if len(vc) > max_modalities_per_col:
-            keep = set(vc.index[:max_modalities_per_col - 1])
+            keep = set(vc.index[:max_modalities_per_col - 1])  # espacio para OTHER
             cat[c] = np.where(cat[c].isin(keep), cat[c], "OTHER")
-            vc = cat[c].value_counts(dropna=False)
+            vc = cat[c].value_counts(dropna=False)  # recomputa tras recorte
+
+        # Enviar categorías muy raras a OTHER
         rare_vals = set(vc[vc < rare_min_count].index)
         if rare_vals:
             cat[c] = cat[c].where(~cat[c].isin(rare_vals), "OTHER")
+
     return cat
-
-
-from prince import MCA
-import numpy as np
-
-def explained_inertia(mca):
-    if hasattr(mca, "explained_inertia_"):
-        return np.array(mca.explained_inertia_, dtype=float)
-    if hasattr(mca, "eigenvalues_"):
-        ev = np.array(mca.eigenvalues_, dtype=float).ravel()
-        tot = ev.sum() or 1.0
-        return ev / tot
-    sv = np.array(mca.singular_values_, dtype=float).ravel()
-    ev = sv**2
-    tot = ev.sum() or 1.0
-    return ev / tot
-
-# cat_df = reduce_categorical_cardinality(cat_df, 50, 30)  # después del mapping
-mca = MCA(n_components=50).fit(cat_df)
-inertia = explained_inertia(mca)
-cum = inertia.cumsum()
-ndims = int(np.searchsorted(cum, 0.80) + 1)
-dims = mca.transform(cat_df).iloc[:, :ndims]
-dims.columns = [f"Dim{i+1}" for i in range(ndims)]
 
 # --- helper robusto para obtener la inercia explicada ---
 def safe_explained_inertia(mca):
@@ -119,7 +127,6 @@ def safe_explained_inertia(mca):
 
     # Último recurso: no hay info de inercia disponible
     raise AttributeError("No fue posible obtener la inercia explicada de 'prince.MCA'.")
-
 
 def fit_mca_full(cat_df: pd.DataFrame, threshold: float = 0.80, n_components: int = 50,
                  max_modalities_per_col: int = 50, rare_min_count: int = 30):
@@ -169,6 +176,26 @@ with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=True):
     st.markdown("- Ejecuta la app con:")
     st.code("streamlit run app.py", language="bash")
 
+# === Carga opcional del mapping desde sidebar o archivo local ===
+ids_map = None
+st.sidebar.subheader("Opcional: mapping de diagnósticos (IDS_mapping.csv)")
+map_file = st.sidebar.file_uploader("Sube IDS_mapping.csv", type=["csv"])
+if map_file is not None:
+    try:
+        ids_map = pd.read_csv(map_file)
+        st.sidebar.success("Mapping cargado desde la subida.")
+    except Exception as e:
+        st.sidebar.warning(f"No se pudo leer el mapping subido: {e}")
+elif os.path.exists("IDS_mapping.csv"):
+    try:
+        ids_map = pd.read_csv("IDS_mapping.csv")
+        st.sidebar.success("Mapping cargado desde archivo local IDS_mapping.csv.")
+    except Exception as e:
+        st.sidebar.warning(f"No se pudo leer IDS_mapping.csv local: {e}")
+else:
+    st.sidebar.info("Sin mapping: la app continuará sin agrupar diagnósticos.")
+
+# === Cargar dataset principal ===
 DATA_PATH = "diabetic_data.csv"
 if not os.path.exists(DATA_PATH):
     st.error("No se encontró `diabetic_data.csv` en el mismo directorio que `app.py`.")
@@ -183,12 +210,14 @@ except Exception as e:
 st.success(f"Dataset cargado: {DATA_PATH} — Forma: {df.shape[0]} filas × {df.shape[1]} columnas")
 st.dataframe(df.head(10), use_container_width=True)
 
-# Paso 1: Limpieza IDs
-st.header("Paso 1: Limpieza de posibles columnas identificadoras")
+# Paso 1: Limpieza IDs + mapping (si existe)
+st.header("Paso 1: Limpieza de posibles columnas identificadoras y mapping opcional")
 try:
-    df_clean, dropped = drop_identifier_like_columns(df, high_uniqueness_ratio=0.95)
-    st.write("Columnas eliminadas (heurística):", dropped if dropped else "Ninguna")
-    st.code("df_clean, dropped = drop_identifier_like_columns(df, high_uniqueness_ratio=0.95)", language="python")
+    df_clean, dropped = drop_identifier_like_columns(df)
+    st.write("Columnas eliminadas:", dropped if dropped else "Ninguna")
+    st.code("df_clean, dropped = drop_identifier_like_columns(df)", language="python")
+
+    df_clean = apply_diag_mapping(df_clean, ids_map)
     st.dataframe(df_clean.head(5), use_container_width=True)
 except Exception as e:
     st.exception(e)
