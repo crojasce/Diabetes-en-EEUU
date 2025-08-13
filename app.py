@@ -86,14 +86,20 @@ def fit_pca(num_df: pd.DataFrame, threshold: float = 0.80):
                        columns=[f"PC{i+1}" for i in range(ncomp)])
     return pcs, pca, cum_var
 
-def fit_mca(cat_df: pd.DataFrame, threshold: float = 0.80, sample_rows: int = 20000, rare_min_count: int = 10):
+def fit_mca(
+    cat_df: pd.DataFrame,
+    threshold: float = 0.80,
+    sample_rows: int = 20000,
+    rare_min_count: int = 10,
+    n_components: int = 50
+):
     """
-    Ajusta MCA con 'prince' de forma eficiente:
-      - Agrupa categorías raras en 'OTHER' (por columna).
-      - Ajusta el modelo en una muestra (hasta sample_rows).
-      - Aplica el modelo a TODO el dataset para obtener coordenadas.
-    Devuelve:
-      dims (DataFrame), mca (modelo), cum_inertia (np.array)
+    Ajusta MCA con 'prince' de forma robusta y eficiente:
+      - Agrupa categorías raras en 'OTHER' por columna.
+      - Ajusta el modelo en una muestra (hasta sample_rows) para acelerar.
+      - Obtiene la inercia explicada de forma compatible con distintas versiones de 'prince'.
+      - Aplica el modelo a TODO el dataset para obtener las coordenadas.
+    Devuelve: dims (DataFrame), mca (modelo), cum_inertia (np.array)
     """
     if cat_df.shape[1] == 0:
         return pd.DataFrame(index=cat_df.index), None, np.array([])
@@ -104,36 +110,56 @@ def fit_mca(cat_df: pd.DataFrame, threshold: float = 0.80, sample_rows: int = 20
             "Instala con: pip install prince\nDetalle: " + PRINCE_ERR
         )
 
-    # Prepara categóricas: str + missing
+    # 1) Preparar categóricas
     cat = cat_df.fillna("missing").astype(str).copy()
 
-    # Agrupar categorías raras por columna para reducir cardinalidad
+    # 2) Agrupar categorías raras para bajar cardinalidad
     for c in cat.columns:
         vc = cat[c].value_counts(dropna=False)
         rare_vals = set(vc[vc < rare_min_count].index)
         if rare_vals:
             cat[c] = cat[c].where(~cat[c].isin(rare_vals), "OTHER")
 
-    # Muestra para entrenar MCA (si hay muchas filas)
+    # 3) Muestra para el ajuste (si el dataset es muy grande)
     if sample_rows and len(cat) > sample_rows:
         cat_fit = cat.sample(sample_rows, random_state=42)
     else:
         cat_fit = cat
 
-    # Ajuste en la muestra
-    mca = MCA()
+    # 4) Ajustar MCA con suficientes componentes para poder superar el umbral
+    mca = MCA(n_components=n_components)
     mca = mca.fit(cat_fit)
 
-    # Inercia acumulada y selección de dimensiones
-    inertia = np.array(mca.explained_inertia_)
+    # 5) Obtener inercia explicada (compatibilidad multi-versión)
+    if hasattr(mca, "explained_inertia_"):
+        # versiones modernas de 'prince'
+        inertia = np.array(mca.explained_inertia_, dtype=float)
+    elif hasattr(mca, "eigenvalues_"):
+        ev = np.array(mca.eigenvalues_, dtype=float).ravel()
+        total = ev.sum() if ev.sum() != 0 else 1.0
+        inertia = ev / total
+    elif hasattr(mca, "singular_values_"):
+        sv = np.array(mca.singular_values_, dtype=float).ravel()
+        ev = sv ** 2
+        total = ev.sum() if ev.sum() != 0 else 1.0
+        inertia = ev / total
+    else:
+        raise AttributeError(
+            "La versión de 'prince' instalada no expone 'explained_inertia_', "
+            "'eigenvalues_' ni 'singular_values_'. Actualiza con: pip install -U 'prince>=0.10,<0.14'"
+        )
+
     cum_inertia = np.cumsum(inertia)
     ndims = int(np.searchsorted(cum_inertia, threshold) + 1)
+    ndims = min(ndims, len(inertia))  # por seguridad
 
-    # Transformar TODO el dataset con el modelo entrenado
+    # 6) Transformar TODO el dataset
     coords_all = mca.transform(cat)
+    ndims = min(ndims, coords_all.shape[1])  # por si el modelo devolvió menos cols
     dims = coords_all.iloc[:, :ndims].copy()
     dims.columns = [f"Dim{i+1}" for i in range(ndims)]
     return dims, mca, cum_inertia
+
 
 # =============== Interfaz ===============
 
@@ -207,19 +233,28 @@ else:
 st.header("Paso 4: MCA sobre variables categóricas (umbral 80%)")
 try:
     with st.spinner("Calculando MCA (esto puede tardar unos segundos)..."):
-        # Puedes ajustar sample_rows y rare_min_count si quieres más/menos precisión/velocidad
-        dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80, sample_rows=20000, rare_min_count=10)
+        dims, mca_model, cum_inertia = fit_mca(
+            cat_df,
+            threshold=0.80,
+            sample_rows=20000,     # ajusta si quieres más/menos velocidad
+            rare_min_count=10,     # sube para más compresión de categorías
+            n_components=50        # suficientes dimensiones para poder llegar al 80%
+        )
 
     if mca_model is None or dims.shape[1] == 0:
         st.warning("No se generaron Dimensiones (¿no hay columnas categóricas?).")
     else:
         st.write(f"Dimensiones retenidas: **{dims.shape[1]}**")
-        st.code("dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80, sample_rows=20000, rare_min_count=10)", language="python")
+        st.code(
+            "dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80, sample_rows=20000, rare_min_count=10, n_components=50)",
+            language="python"
+        )
         st.line_chart(pd.DataFrame(cum_inertia, columns=["Inercia acumulada"]))
         st.dataframe(dims.head(10), use_container_width=True)
 except ImportError as e:
     st.warning(str(e))
     dims = pd.DataFrame(index=df.index)
+
 
 
 # Paso 5: Concatenación final
