@@ -3,4 +3,6 @@ pandas
 numpy
 scikit-learn
 scipy
+prince
+
 
