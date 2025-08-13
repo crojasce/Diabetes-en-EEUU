@@ -7,8 +7,9 @@ Aplicación web para explorar prevalencia de condiciones crónicas utilizando **
 
 ##  Contenido del repositorio
 
-- `app_pca_acm_nhanes.py`  
-  Aplicación principal en Streamlit. Incluye filtros interactivos, pipelines de procesamiento, análisis de componentes principales (PCA), análisis de correspondencias múltiples (ACM), distintos métodos de selección de variables y validación cruzada.
+- - `app.py`
+  Aplicación principal en Streamlit para análisis PCA y MCA en el dataset de diabetes.
+
 
 - `requirements.txt`  
   Paquetes necesarios para ejecutar la app (Streamlit, scikit-learn, imbalanced-learn, prince, seaborn, matplotlib, numpy, pandas, etc.).
