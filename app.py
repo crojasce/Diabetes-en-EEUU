@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA, TruncatedSVD
 st.set_page_config(page_title="PCA + MCA (Bioestadística)", layout="wide")
 
 st.title("Taller 1 · PCA (num) + MCA (cat)")
-st.caption(Realizar PCA (sobre el conjunto de variables numéricas) y MCA (sobre el conjunto de variables categóricas), seleccionar las componentes principales y las dimensiones que acumulen una varianza por encima de algún porcentaje (ustedes lo deciden) y crear un nuevo dataset con las pcs y las dimensiones concatenadas.)
+st.caption("Realizar PCA (sobre el conjunto de variables numéricas) y MCA (sobre el conjunto de variables categóricas), seleccionar las componentes principales y las dimensiones que acumulen una varianza por encima de algún porcentaje (ustedes lo deciden) y crear un nuevo dataset con las pcs y las dimensiones concatenadas.")
 st.caption("Cargue su CSV, elija el umbral de varianza y obtenga el dataset con las componentes concatenadas.")
 
 # -----------------------------
