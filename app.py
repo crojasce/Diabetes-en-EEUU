@@ -100,8 +100,26 @@ ndims = int(np.searchsorted(cum, 0.80) + 1)
 dims = mca.transform(cat_df).iloc[:, :ndims]
 dims.columns = [f"Dim{i+1}" for i in range(ndims)]
 
-    # si no hay nada de lo anterior:
+# --- helper robusto para obtener la inercia explicada ---
+def safe_explained_inertia(mca):
+    """Compatibilidad multi-versión de 'prince' para obtener la inercia explicada."""
+    if hasattr(mca, "explained_inertia_"):
+        return np.asarray(mca.explained_inertia_, dtype=float)
+
+    if hasattr(mca, "eigenvalues_"):
+        ev = np.asarray(mca.eigenvalues_, dtype=float).ravel()
+        total = ev.sum() or 1.0
+        return ev / total
+
+    if hasattr(mca, "singular_values_"):
+        sv = np.asarray(mca.singular_values_, dtype=float).ravel()
+        ev = sv ** 2
+        total = ev.sum() or 1.0
+        return ev / total
+
+    # Último recurso: no hay info de inercia disponible
     raise AttributeError("No fue posible obtener la inercia explicada de 'prince.MCA'.")
+
 
 def fit_mca_full(cat_df: pd.DataFrame, threshold: float = 0.80, n_components: int = 50,
                  max_modalities_per_col: int = 50, rare_min_count: int = 30):
