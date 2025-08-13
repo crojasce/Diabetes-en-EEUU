@@ -1,6 +1,6 @@
-# NHANES‑Streamlit
+# DIABETES
 
-**Análisis interactivo de datos NHANES con Streamlit**  
+**ANÁLISIS CON LAS VARIABLES CATEGÓRICAS**  
 Aplicación web para explorar prevalencia de condiciones crónicas utilizando **PCA** y **ACM**, con técnicas avanzadas de selección de variables y validación cruzada.
 
 ---
