@@ -183,12 +183,9 @@ y **crear un nuevo dataset** con las **PCs** y las **Dimensiones** concatenadas.
 
 with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=False):
     st.markdown(
-        """
-- Dependencias: `streamlit`, `pandas`, `numpy`, `scikit-learn`, `prince`  
- """
+        "- Dependencias: `streamlit`, `pandas`, `numpy`, `scikit-learn`, `prince`"
     )
-  ```bash
-  pip install streamlit pandas numpy scikit-learn prince
+    st.code("pip install streamlit pandas numpy scikit-learn prince", language="bash")
 
 
 
