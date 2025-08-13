@@ -1,151 +1,192 @@
 # app.py
+# ------------------------------------------------------------
+# App educativa para PCA (numéricas) + MCA (categóricas)
+# Selección de componentes/dimensiones por umbral de varianza/inercia acumulada
+# y concatenación de PCs + Dims en un solo dataset.
+#
+# Requisitos:
+#   pip install streamlit pandas numpy scikit-learn prince
+#
+# Ejecuta:
+#   streamlit run app.py
+# ------------------------------------------------------------
+
+import os
 import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.decomposition import PCA, TruncatedSVD
 
-st.set_page_config(page_title="PCA + MCA (Bioestadística)", layout="wide")
+from typing import Tuple, List
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
-st.title("Taller 1 Dataset DIABETES")
-st.title("Tarea 1")
-st.caption("Realizar PCA (sobre el conjunto de variables numéricas) y MCA (sobre el conjunto de variables categóricas), seleccionar las componentes principales y las dimensiones que acumulen una varianza por encima de algún porcentaje (ustedes lo deciden) y crear un nuevo dataset con las pcs y las dimensiones concatenadas.")
-st.caption("Instalación de librerías necesarias Se instalan y cargan las librerías que utilizaremos:             prince para realizar el Análisis de Correspondencias Múltiples (MCA).             scikit-learn para el Análisis de Componentes Principales (PCA) y el escalado de datos.             pandas y numpy para la manipulación de datos.             También se importa zipfile para descomprimir el archivo ZIP con la base de datos.")
+# Intentamos importar prince.MCA de forma segura
+try:
+    from prince import MCA
+    PRINCE_OK = True
+except Exception as e:
+    PRINCE_OK = False
+    PRINCE_ERR = str(e)
 
-# -----------------------------
-# Sidebar: parámetros
-# -----------------------------
+# ============================
+# Utilidades
+# ============================
 
-with st.sidebar:
-    st.header("Parámetros")
-    var_threshold = st.slider("Varianza acumulada objetivo", 0.50, 0.99, 0.90, 0.01)
-    max_svd_try = st.number_input("Máx. componentes a probar (MCA)", min_value=50, max_value=2000, value=500, step=50)
-    random_state = st.number_input("random_state", min_value=0, value=42, step=1)
-    st.markdown("---")
-    st.caption("IDs que NO se usan en el análisis")
-    id_cols_text = st.text_input("Columnas ID (separadas por coma)", "encounter_id,patient_nbr")
+def is_identifier(colname: str) -> bool:
+    """Heurística simple para detectar columnas identificadoras por nombre."""
+    name = str(colname).lower()
+    return any(tok in name for tok in ["id", "identifier", "uuid", "nbr", "key", "encounter"])
 
-# -----------------------------
-# Carga de datos
-# -----------------------------
-st.subheader("1) Cargar datos")
-uploaded = st.file_uploader("Sube tu archivo .csv (por ejemplo diabetic_data.csv)", type=["csv"])
+def drop_identifier_like_columns(
+    df: pd.DataFrame,
+    id_name_check: bool = True,
+    high_uniqueness_ratio: float = 0.95
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Elimina columnas que parecen identificadores:
+      - Por nombre (contiene 'id', 'uuid', 'nbr', etc.)
+      - Por unicidad (nunique ~ número de filas)
+    """
+    cols_to_drop = set()
+    nrows = len(df)
+    if nrows == 0:
+        return df.copy(), []
 
-if uploaded is None:
-    st.info("Esperando un CSV…")
-    st.stop()
+    if id_name_check:
+        for c in df.columns:
+            if is_identifier(c):
+                cols_to_drop.add(c)
 
-df = pd.read_csv(uploaded)
-st.write("**Vista rápida (primeras filas):**")
-st.dataframe(df.head())
+    for c in df.columns:
+        try:
+            unique_ratio = df[c].nunique(dropna=True) / max(1, nrows)
+            if unique_ratio >= high_uniqueness_ratio:
+                cols_to_drop.add(c)
+        except Exception:
+            pass
 
-# Parsear columnas ID
-id_cols = [c.strip() for c in id_cols_text.split(",") if c.strip()]
+    cleaned = df.drop(columns=list(cols_to_drop), errors="ignore")
+    return cleaned, sorted(list(cols_to_drop))
 
-# -----------------------------
-# Detección de tipos
-# -----------------------------
-st.subheader("2) Detección de variables")
-num_cols = df.select_dtypes(include=["int64", "float64"]).columns.tolist()
-cat_cols = df.select_dtypes(include=["object"]).columns.tolist()
+def split_numeric_categorical(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Separa dataframes numéricos y categóricos según dtype."""
+    numeric_df = df.select_dtypes(include=["number"]).copy()
+    categorical_df = df.select_dtypes(exclude=["number"]).copy()
+    return numeric_df, categorical_df
 
-# Mover *_id a categóricas (si aparecen como numéricas)
-for c in df.columns:
-    if c.endswith("_id") and c not in id_cols and c not in cat_cols:
-        if c in num_cols:
-            num_cols.remove(c)
-        cat_cols.append(c)
+def fit_pca(numeric_df: pd.DataFrame, threshold: float):
+    """
+    Estandariza y ajusta PCA. Devuelve:
+      - PCs retenidas hasta el umbral
+      - objeto PCA
+      - varianza explicada acumulada
+    """
+    if numeric_df.shape[1] == 0:
+        return pd.DataFrame(index=numeric_df.index), None, np.array([])
 
-# Quitar IDs
-num_cols = [c for c in num_cols if c not in id_cols]
-cat_cols = [c for c in cat_cols if c not in id_cols]
+    scaler = StandardScaler(with_mean=True, with_std=True)
+    X_num = scaler.fit_transform(numeric_df.fillna(numeric_df.mean(numeric_only=True)))
 
-c1, c2 = st.columns(2)
-with c1:
-    st.write("**Numéricas:**", len(num_cols))
-    st.code(", ".join(num_cols[:25]) + ("..." if len(num_cols) > 25 else ""))
-with c2:
-    st.write("**Categóricas:**", len(cat_cols))
-    st.code(", ".join(cat_cols[:25]) + ("..." if len(cat_cols) > 25 else ""))
+    pca = PCA()
+    X_pca = pca.fit_transform(X_num)
 
-# -----------------------------
-# PCA numéricas
-# -----------------------------
-st.subheader("3) PCA en variables numéricas")
-if len(num_cols) == 0:
-    st.warning("No se detectaron variables numéricas (o quedaron todas excluidas).")
-    pca_df = pd.DataFrame(index=df.index)
-else:
-    Xn = df[num_cols].copy()
-    imp = SimpleImputer(strategy="median")
-    Xn_imp = imp.fit_transform(Xn)
-    scaler = StandardScaler()
-    Xn_scaled = scaler.fit_transform(Xn_imp)
+    cum_var = np.cumsum(pca.explained_variance_ratio_)
+    n_components = int(np.searchsorted(cum_var, threshold) + 1)
 
-    # n_components como proporción para alcanzar el umbral
-    pca = PCA(n_components=var_threshold, svd_solver="full", random_state=random_state)
-    Z_num = pca.fit_transform(Xn_scaled)
-    pca_cols = [f"PCA_{i+1}" for i in range(Z_num.shape[1])]
-    pca_df = pd.DataFrame(Z_num, columns=pca_cols, index=df.index)
+    pcs = pd.DataFrame(
+        X_pca[:, :n_components],
+        index=numeric_df.index,
+        columns=[f"PC{i+1}" for i in range(n_components)]
+    )
+    return pcs, pca, cum_var
 
-    st.write(f"**Componentes PCA seleccionadas:** {pca_df.shape[1]}")
-    st.line_chart(pd.Series(pca.explained_variance_ratio_).cumsum(), height=180)
-    st.dataframe(pca_df.head())
+def fit_mca(categorical_df: pd.DataFrame, threshold: float):
+    """
+    Ajusta MCA sobre categóricas. Devuelve:
+      - coordenadas (Dimensiones) retenidas hasta el umbral
+      - objeto MCA
+      - inercia acumulada
+    """
+    if categorical_df.shape[1] == 0:
+        return pd.DataFrame(index=categorical_df.index), None, np.array([])
 
-# -----------------------------
-# MCA categóricas (OneHot + TruncatedSVD)
-# -----------------------------
-st.subheader("4) MCA en variables categóricas")
-if len(cat_cols) == 0:
-    st.warning("No se detectaron variables categóricas.")
-    mca_df = pd.DataFrame(index=df.index)
-else:
-    Xc_raw = df[cat_cols].copy().replace("?", np.nan)
-    Xc = Xc_raw.fillna("Unknown")
-    ohe = OneHotEncoder(handle_unknown="ignore", sparse=True, dtype=np.float32)
-    Xc_ohe = ohe.fit_transform(Xc)
+    if not PRINCE_OK:
+        raise ImportError(
+            "La librería 'prince' no está disponible. Instala con: pip install prince\n"
+            f"Detalle: {PRINCE_ERR}"
+        )
 
-    # Intento incremental de SVD para alcanzar el umbral (sin reventar memoria)
-    n_try = min(max_svd_try, Xc_ohe.shape[1] - 1) if Xc_ohe.shape[1] > 1 else 0
-    if n_try <= 0:
-        mca_df = pd.DataFrame(index=df.index)
-        st.warning("No fue posible construir SVD (muy pocas columnas tras One-Hot).")
-    else:
-        svd_probe = TruncatedSVD(n_components=n_try, random_state=random_state)
-        svd_probe.fit(Xc_ohe)
-        cum = svd_probe.explained_variance_ratio_.cumsum()
-        k_cat = int(np.searchsorted(cum, var_threshold) + 1)
-        k_cat = min(k_cat, n_try)
+    cat = categorical_df.fillna("missing").astype(str)
+    mca = MCA()
+    mca = mca.fit(cat)
+    coords = mca.transform(cat)
 
-        svd = TruncatedSVD(n_components=k_cat, random_state=random_state)
-        Z_cat = svd.fit_transform(Xc_ohe)
-        mca_cols = [f"MCA_{i+1}" for i in range(k_cat)]
-        mca_df = pd.DataFrame(Z_cat, columns=mca_cols, index=df.index)
+    inertia = np.array(mca.explained_inertia_)  # lista de inercia por dimensión
+    cum_inertia = np.cumsum(inertia)
+    n_dims = int(np.searchsorted(cum_inertia, threshold) + 1)
 
-        st.write(f"**Dimensiones MCA seleccionadas:** {mca_df.shape[1]}")
-        st.line_chart(pd.Series(svd_probe.explained_variance_ratio_).cumsum(), height=180)
-        st.dataframe(mca_df.head())
+    dims = coords.iloc[:, :n_dims].copy()
+    dims.columns = [f"Dim{i+1}" for i in range(n_dims)]
+    return dims, mca, cum_inertia
 
-# -----------------------------
-# Concatenación y descarga
-# -----------------------------
-st.subheader("5) Dataset final (PCA + MCA)")
-final_df = pd.concat([pca_df, mca_df], axis=1)
-st.write(f"**Forma del dataset final:** {final_df.shape[0]} filas × {final_df.shape[1]} columnas")
-st.dataframe(final_df.head())
+@st.cache_data
+def load_csv(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
 
-# Descargar CSV
-csv_bytes = final_df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    label="⬇️ Descargar dataset_pca_mca.csv",
-    data=csv_bytes,
-    file_name="dataset_pca_mca.csv",
-    mime="text/csv"
+@st.cache_data
+def pca_mca_pipeline(
+    df: pd.DataFrame,
+    threshold: float = 0.80,
+    drop_ids: bool = True,
+    high_uniqueness_ratio: float = 0.95
+):
+    # 1) limpiar IDs
+    df_clean, dropped_ids = (drop_identifier_like_columns(df, True, high_uniqueness_ratio)
+                             if drop_ids else (df.copy(), []))
+    # 2) separar tipos
+    num_df, cat_df = split_numeric_categorical(df_clean)
+    # 3) PCA
+    pcs, pca_model, cum_var = fit_pca(num_df, threshold)
+    # 4) MCA
+    dims, mca_model, cum_inertia = fit_mca(cat_df, threshold) if cat_df.shape[1] > 0 else (pd.DataFrame(index=df.index), None, np.array([]))
+    # 5) Concatenar
+    out_df = pd.concat([pcs, dims], axis=1)
+    return {
+        "df_clean": df_clean,
+        "dropped_ids": dropped_ids,
+        "num_df": num_df,
+        "cat_df": cat_df,
+        "pcs": pcs,
+        "pca_model": pca_model,
+        "cum_var": cum_var,
+        "dims": dims,
+        "mca_model": mca_model,
+        "cum_inertia": cum_inertia,
+        "out_df": out_df
+    }
+
+# ============================
+# UI
+# ============================
+
+st.set_page_config(page_title="PCA + MCA | Diabetes", layout="wide")
+
+st.title("PCA + MCA del dataset de Diabetes en EE. UU.")
+st.markdown(
+    """
+**Objetivo:** Aplicar **PCA** sobre las variables **numéricas** y **MCA** sobre las **categóricas**, 
+seleccionar las **componentes/dimensiones** que acumulen **≥ un umbral de varianza/inercia** (por defecto 80%) 
+y **crear un nuevo dataset** con las **PCs** y las **Dimensiones** concatenadas.
+"""
 )
 
-
+with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=False):
+    st.markdown(
+        """
+- Dependencias: `streamlit`, `pandas`, `numpy`, `scikit-learn`, `prince`  
+  ```bash
+  pip install streamlit pandas numpy scikit-learn prince
 
 
 
