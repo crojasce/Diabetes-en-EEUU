@@ -1,7 +1,7 @@
 # DIABETES
 
-**ANÁLISIS CON LAS VARIABLES CATEGÓRICAS**  
-Aplicación web para explorar prevalencia de condiciones crónicas utilizando **PCA** y **ACM**, con técnicas avanzadas de selección de variables y validación cruzada.
+**TAREA 1**  
+Realizar PCA (sobre el conjunto de variables numéricas) y MCA (sobre el conjunto de variables categóricas), seleccionar las componentes principales y las dimensiones que acumulen una varianza por encima de algún porcentaje (ustedes lo deciden) y crear un nuevo dataset con las pcs y las dimensiones concatenadas.
 
 ---
 
