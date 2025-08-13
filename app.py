@@ -186,6 +186,7 @@ with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=False):
         """
 - Dependencias: `streamlit`, `pandas`, `numpy`, `scikit-learn`, `prince`  
  """
+    )
   ```bash
   pip install streamlit pandas numpy scikit-learn prince
 
