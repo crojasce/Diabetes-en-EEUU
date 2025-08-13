@@ -1,13 +1,14 @@
 # app.py
 # ------------------------------------------------------------
 # PCA (numéricas) + MCA (categóricas) con umbral del 80%
-# - Mapping de diagnósticos OPCIONAL (subida por sidebar o archivo local)
-# - Reduce categorías raras/alta cardinalidad a "OTHER" para acelerar/estabilizar
+# - Mapping de diagnósticos OPCIONAL (sidebar o archivo local)
+# - Reduce categorías raras/alta cardinalidad a "OTHER"
 # - Paso a paso + dataset final concatenado (PCs + Dimensiones)
 # ------------------------------------------------------------
 
 import io
 import os
+from pathlib import Path
 from typing import Tuple, List
 
 import numpy as np
@@ -16,7 +17,7 @@ import streamlit as st
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
-# Importar prince.MCA de forma segura
+# Intento seguro de importar prince.MCA
 try:
     from prince import MCA
     PRINCE_OK = True
@@ -28,9 +29,7 @@ except Exception as e:
 # ================= Utilidades =================
 
 def drop_identifier_like_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Elimina SOLO identificadores reales.
-    """
+    """Elimina SOLO identificadores reales para no distorsionar el MCA/PCA."""
     ids_reales = {"encounter_id", "patient_nbr"}
     dropped = [c for c in df.columns if c in ids_reales]
     return df.drop(columns=dropped, errors="ignore"), dropped
@@ -51,14 +50,13 @@ def apply_diag_mapping(df_in: pd.DataFrame, ids_map: pd.DataFrame | None) -> pd.
     col_group = next((c for c in group_candidates if c in ids_map.columns), None)
 
     if col_code is None or col_group is None:
-        st.warning("IDS_mapping.csv no tiene columnas esperadas (ej. 'code' y 'group'). Se omite el mapeo.")
+        st.warning("IDS_mapping.csv no tiene columnas esperadas (p. ej., 'code' y 'group'). Se omite el mapeo.")
         return df_in
 
     mapping = ids_map.set_index(col_code)[col_group].to_dict()
     df = df_in.copy()
     for col in ["diag_1", "diag_2", "diag_3"]:
         if col in df.columns:
-            # Mapea a grupo; si no hay mapeo, mantiene el valor original
             df[col] = df[col].astype(str).map(mapping).fillna(df[col].astype(str))
     st.info("Mapping de diagnósticos aplicado.")
     return df
@@ -91,13 +89,12 @@ def reduce_categorical_cardinality(cat: pd.DataFrame, max_modalities_per_col=50,
     - Además, toda categoría con conteo < rare_min_count -> 'OTHER'
     """
     cat = cat.fillna("missing").astype(str).copy()
-
     for c in cat.columns:
         vc = cat[c].value_counts(dropna=False)
 
         # Recortar a top categorías si hay demasiadas
         if len(vc) > max_modalities_per_col:
-            keep = set(vc.index[:max_modalities_per_col - 1])  # espacio para OTHER
+            keep = set(vc.index[:max_modalities_per_col - 1])  # deja espacio para OTHER
             cat[c] = np.where(cat[c].isin(keep), cat[c], "OTHER")
             vc = cat[c].value_counts(dropna=False)  # recomputa tras recorte
 
@@ -105,33 +102,27 @@ def reduce_categorical_cardinality(cat: pd.DataFrame, max_modalities_per_col=50,
         rare_vals = set(vc[vc < rare_min_count].index)
         if rare_vals:
             cat[c] = cat[c].where(~cat[c].isin(rare_vals), "OTHER")
-
     return cat
 
-# --- helper robusto para obtener la inercia explicada ---
 def safe_explained_inertia(mca):
     """Compatibilidad multi-versión de 'prince' para obtener la inercia explicada."""
     if hasattr(mca, "explained_inertia_"):
         return np.asarray(mca.explained_inertia_, dtype=float)
-
     if hasattr(mca, "eigenvalues_"):
         ev = np.asarray(mca.eigenvalues_, dtype=float).ravel()
         total = ev.sum() or 1.0
         return ev / total
-
     if hasattr(mca, "singular_values_"):
         sv = np.asarray(mca.singular_values_, dtype=float).ravel()
         ev = sv ** 2
         total = ev.sum() or 1.0
         return ev / total
-
-    # Último recurso: no hay info de inercia disponible
     raise AttributeError("No fue posible obtener la inercia explicada de 'prince.MCA'.")
 
 def fit_mca_full(cat_df: pd.DataFrame, threshold: float = 0.80, n_components: int = 50,
                  max_modalities_per_col: int = 50, rare_min_count: int = 30):
     """
-    Ajusta MCA en TODO el dataset (sin muestreo) pero con reducción de cardinalidad para ser más rápido/estable.
+    Ajusta MCA en TODO el dataset (sin muestreo), reduciendo cardinalidad para ser más rápido/estable.
     """
     if cat_df.shape[1] == 0:
         return pd.DataFrame(index=cat_df.index), None, np.array([])
@@ -176,28 +167,42 @@ with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=True):
     st.markdown("- Ejecuta la app con:")
     st.code("streamlit run app.py", language="bash")
 
+# === Rutas base ===
+BASE_DIR = Path(__file__).resolve().parent
+
 # === Carga opcional del mapping desde sidebar o archivo local ===
 ids_map = None
 st.sidebar.subheader("Opcional: mapping de diagnósticos (IDS_mapping.csv)")
 map_file = st.sidebar.file_uploader("Sube IDS_mapping.csv", type=["csv"])
+
 if map_file is not None:
     try:
         ids_map = pd.read_csv(map_file)
         st.sidebar.success("Mapping cargado desde la subida.")
     except Exception as e:
         st.sidebar.warning(f"No se pudo leer el mapping subido: {e}")
-elif os.path.exists("IDS_mapping.csv"):
-    try:
-        ids_map = pd.read_csv("IDS_mapping.csv")
-        st.sidebar.success("Mapping cargado desde archivo local IDS_mapping.csv.")
-    except Exception as e:
-        st.sidebar.warning(f"No se pudo leer IDS_mapping.csv local: {e}")
 else:
-    st.sidebar.info("Sin mapping: la app continuará sin agrupar diagnósticos.")
+    local_map = BASE_DIR / "IDS_mapping.csv"
+    if local_map.exists():
+        try:
+            ids_map = pd.read_csv(local_map)
+            st.sidebar.success(f"Mapping cargado desde archivo local: {local_map.name}")
+        except Exception as e:
+            st.sidebar.warning(f"No se pudo leer el mapping local: {e}")
+    else:
+        st.sidebar.info("Sin mapping: la app continuará sin agrupar diagnósticos.")
+
+# (opcional) Debug rápido de archivos
+if st.sidebar.checkbox("🔎 Debug: listar archivos del directorio de la app"):
+    st.sidebar.write("Directorio base:", str(BASE_DIR))
+    try:
+        st.sidebar.write(sorted(os.listdir(BASE_DIR)))
+    except Exception as e:
+        st.sidebar.write(f"Error listando BASE_DIR: {e}")
 
 # === Cargar dataset principal ===
-DATA_PATH = "diabetic_data.csv"
-if not os.path.exists(DATA_PATH):
+DATA_PATH = BASE_DIR / "diabetic_data.csv"
+if not DATA_PATH.exists():
     st.error("No se encontró `diabetic_data.csv` en el mismo directorio que `app.py`.")
     st.stop()
 
@@ -207,7 +212,7 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-st.success(f"Dataset cargado: {DATA_PATH} — Forma: {df.shape[0]} filas × {df.shape[1]} columnas")
+st.success(f"Dataset cargado: {DATA_PATH.name} — Forma: {df.shape[0]} filas × {df.shape[1]} columnas")
 st.dataframe(df.head(10), use_container_width=True)
 
 # Paso 1: Limpieza IDs + mapping (si existe)
@@ -265,7 +270,7 @@ try:
         dims, mca_model, cum_inertia = fit_mca_full(
             cat_df,
             threshold=0.80,
-            n_components=50,          # suficientes dims para llegar al 80%
+            n_components=50,            # suficientes dims para llegar al 80%
             max_modalities_per_col=50,  # recorta cardinalidad por columna
             rare_min_count=30
         )
@@ -310,4 +315,5 @@ except Exception as e:
 
 st.markdown("---")
 st.caption("Umbral fijo al 80%. Para datasets muy grandes, la reducción de categorías acelera el MCA sin perder interpretabilidad.")
+
 
