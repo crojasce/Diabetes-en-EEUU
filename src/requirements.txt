@@ -1,7 +1,0 @@
-app.py
-requirements.txt
-streamlit
-pandas
-numpy
-scikit-learn
-scipy
