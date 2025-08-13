@@ -22,6 +22,7 @@ Notas:
 - MCA requiere la librería 'prince'.
 """
 
+pip install prince
 import argparse
 import sys
 import os
