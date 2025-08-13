@@ -86,8 +86,15 @@ def fit_pca(num_df: pd.DataFrame, threshold: float = 0.80):
                        columns=[f"PC{i+1}" for i in range(ncomp)])
     return pcs, pca, cum_var
 
-def fit_mca(cat_df: pd.DataFrame, threshold: float = 0.80):
-    """Ajusta MCA y devuelve dimensiones hasta alcanzar el umbral."""
+def fit_mca(cat_df: pd.DataFrame, threshold: float = 0.80, sample_rows: int = 20000, rare_min_count: int = 10):
+    """
+    Ajusta MCA con 'prince' de forma eficiente:
+      - Agrupa categorías raras en 'OTHER' (por columna).
+      - Ajusta el modelo en una muestra (hasta sample_rows).
+      - Aplica el modelo a TODO el dataset para obtener coordenadas.
+    Devuelve:
+      dims (DataFrame), mca (modelo), cum_inertia (np.array)
+    """
     if cat_df.shape[1] == 0:
         return pd.DataFrame(index=cat_df.index), None, np.array([])
 
@@ -97,16 +104,34 @@ def fit_mca(cat_df: pd.DataFrame, threshold: float = 0.80):
             "Instala con: pip install prince\nDetalle: " + PRINCE_ERR
         )
 
-    cat = cat_df.fillna("missing").astype(str)
-    mca = MCA()
-    mca = mca.fit(cat)
-    coords = mca.transform(cat)
+    # Prepara categóricas: str + missing
+    cat = cat_df.fillna("missing").astype(str).copy()
 
-    inertia = np.array(mca.explained_inertia_)  # inercia por dimensión
+    # Agrupar categorías raras por columna para reducir cardinalidad
+    for c in cat.columns:
+        vc = cat[c].value_counts(dropna=False)
+        rare_vals = set(vc[vc < rare_min_count].index)
+        if rare_vals:
+            cat[c] = cat[c].where(~cat[c].isin(rare_vals), "OTHER")
+
+    # Muestra para entrenar MCA (si hay muchas filas)
+    if sample_rows and len(cat) > sample_rows:
+        cat_fit = cat.sample(sample_rows, random_state=42)
+    else:
+        cat_fit = cat
+
+    # Ajuste en la muestra
+    mca = MCA()
+    mca = mca.fit(cat_fit)
+
+    # Inercia acumulada y selección de dimensiones
+    inertia = np.array(mca.explained_inertia_)
     cum_inertia = np.cumsum(inertia)
     ndims = int(np.searchsorted(cum_inertia, threshold) + 1)
 
-    dims = coords.iloc[:, :ndims].copy()
+    # Transformar TODO el dataset con el modelo entrenado
+    coords_all = mca.transform(cat)
+    dims = coords_all.iloc[:, :ndims].copy()
     dims.columns = [f"Dim{i+1}" for i in range(ndims)]
     return dims, mca, cum_inertia
 
@@ -181,17 +206,21 @@ else:
 # Paso 4: MCA categóricas (umbral 80%)
 st.header("Paso 4: MCA sobre variables categóricas (umbral 80%)")
 try:
-    dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80)
+    with st.spinner("Calculando MCA (esto puede tardar unos segundos)..."):
+        # Puedes ajustar sample_rows y rare_min_count si quieres más/menos precisión/velocidad
+        dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80, sample_rows=20000, rare_min_count=10)
+
     if mca_model is None or dims.shape[1] == 0:
         st.warning("No se generaron Dimensiones (¿no hay columnas categóricas?).")
     else:
         st.write(f"Dimensiones retenidas: **{dims.shape[1]}**")
-        st.code("dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80)", language="python")
+        st.code("dims, mca_model, cum_inertia = fit_mca(cat_df, threshold=0.80, sample_rows=20000, rare_min_count=10)", language="python")
         st.line_chart(pd.DataFrame(cum_inertia, columns=["Inercia acumulada"]))
         st.dataframe(dims.head(10), use_container_width=True)
 except ImportError as e:
     st.warning(str(e))
-    dims = pd.DataFrame(index=df.index)  # si MCA no disponible, seguimos solo con PCs
+    dims = pd.DataFrame(index=df.index)
+
 
 # Paso 5: Concatenación final
 st.header("Paso 5: Nuevo dataset con PCs + Dimensiones concatenadas")
