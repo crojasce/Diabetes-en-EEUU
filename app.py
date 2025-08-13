@@ -187,6 +187,15 @@ with st.expander("🧩 Requisitos e instrucciones rápidas", expanded=False):
     )
     st.code("pip install streamlit pandas numpy scikit-learn prince", language="bash")
 
+uploaded = st.sidebar.file_uploader("Sube tu CSV (p. ej., diabetic_data.csv)", type=["csv"])
+...
+if uploaded is not None:
+    df = pd.read_csv(uploaded)
+elif os.path.exists(default_path):
+    df = load_csv(default_path)
+else:
+    st.info("Sube tu `diabetic_data.csv` en la barra lateral para comenzar.")
+    st.stop()
 
 
 
